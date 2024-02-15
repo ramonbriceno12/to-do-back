@@ -21,18 +21,28 @@ const pool = new Pool({
 })
 
 // Protected route middleware
-function verifyToken(req, res, next) {
+async function verifyToken(req, res, next) {
     const authHeader = req.headers.authorization;
   
     if (!authHeader || !authHeader.startsWith('Bearer '))
       return res.status(401).json({ message: 'Unauthorized access' });
   
     const token = authHeader.split(' ')[1];
+
+    
   
     try {
-      const decoded = jwt.verify(token, SECRET_KEY);
-      req.userId = decoded.userId;
-      next();
+    
+        const blacklistedToken = await pool.query('SELECT * FROM blacklisted_tokens WHERE token = $1', [token])
+
+        if(blacklistedToken.rows.length > 0)
+            return res.status(401).json({ message: 'Invalid token' });
+
+        const decoded = jwt.verify(token, SECRET_KEY);
+        req.userId = decoded.userId;
+        next();
+
+
     } catch (error) {
       return res.status(401).json({ message: 'Invalid token' });
     }
@@ -49,7 +59,7 @@ app.post('/users', async (req, res) => {
         const users = await pool.query('SELECT * FROM users WHERE email = $1', [email])
 
         if(users.rows.length > 0)
-            res.status(401).json({ statusCode: '401', msg: "User alreay exist"})
+            res.status(401).json({ statusCode: '401', msg: "User already exist"})
 
         const resUser = await pool.query('INSERT INTO users (name, email, password) VALUES ($1, $2, $3) returning id', [name, email, hashedPassword])
 
@@ -98,6 +108,20 @@ app.post('/users/login', async (req, res) => {
 
 })
 
+
+app.get('/users/logout', async (req, res) => {
+    const token = req.headers.authorization?.split(' ')[1];
+
+    if (!token)
+        return res.status(400).json({ message: 'Invalid token' });
+
+    // Add token to blacklist
+    await pool.query('INSERT INTO blacklisted_tokens (token) VALUES ($1)', [token])
+
+    res.json({ message: 'Logged out successfully' });
+    
+  });
+
 app.get('/', verifyToken, async (req, res) => {
 
     try {
@@ -116,11 +140,11 @@ app.get('/', verifyToken, async (req, res) => {
 
 })
 
-app.post('/', async (req, res) => {
+app.post('/', verifyToken, async (req, res) => {
 
     try {
         const data = req.body
-        await pool.query(`INSERT INTO todo_list (title, due_date, description) VALUES ($1::text, $2::date, $3::text)`, [data.title, data.due_date, data.description])
+        await pool.query(`INSERT INTO todo_list (title, due_date, description, user_id) VALUES ($1::text, $2::date, $3::text, $4)`, [data.title, data.due_date, data.description, req.userId])
 
         res.status(200).json({
             statusCode: '200',
